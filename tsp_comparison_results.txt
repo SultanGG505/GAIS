@@ -1,0 +1,19 @@
+# TSP Single Run Results
+Num Cities: 10
+
+--- Darwinian GA ---
+Darwin GA Best Route: 1 6 2 4 8 5 9 3 7 10 1
+Darwin GA Best Distance: 87.0000
+Darwin GA Best Found Generation: 109
+Darwin GA Time (s): 2.2128
+
+--- De Vriesian GA ---
+De Vries GA Best Route: 1 8 5 9 3 4 2 6 7 10 1
+De Vries GA Best Distance: 88.0000
+De Vries GA Best Found Generation: 86
+De Vries GA Time (s): 2.3888
+
+--- Exact Solution ---
+Exact Best Route: 1 6 2 4 8 5 9 3 7 10 1
+Exact Best Distance: 87.0000
+Exact Time (s): 1.2544

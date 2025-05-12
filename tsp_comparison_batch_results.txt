@@ -1,0 +1,32 @@
+# TSP Batch Run Results
+Num Cities: 10
+Iterations: 2
+GA Population Size: 150
+GA Num Parents: 75
+GA Mutation Rate: 0.15
+GA Generations: 500
+De Vries Injection Percent: 5.0%
+Exact Solution Enabled: True
+
+--- Iteration Data ---
+Iter,Darwin_Dist,Darwin_Time,DeVries_Dist,DeVries_Time,Exact_Dist,Exact_Time,Darwin_Best_Gen,DeVries_Best_Gen
+1,137.0000,2.1264,135.0000,2.3075,135.0000,1.2559,45,60
+2,110.0000,2.1246,110.0000,2.3199,110.0000,1.2538,140,27
+
+--- Summary Statistics ---
+Average Darwin Distance: 123.5000
+Average De Vries Distance: 122.5000
+Average Exact Distance: 122.5000
+Average Darwin Time (s): 2.1255
+Average De Vries Time (s): 2.3137
+Average Exact Time (s): 1.2548
+Average Darwin Best Gen: 92.5000
+Average De Vries Best Gen: 43.5000
+Darwin Optimal Found Count: 1
+Darwin Optimal Found Percentage (%): 50.0000
+De Vries Optimal Found Count: 2
+De Vries Optimal Percentage (%): 100.0000
+Average Darwin Relative Deviation (%): 0.7407
+Darwin Infinite Relative Deviation Count: 0
+Average De Vries Relative Deviation (%): 0.0000
+De Vries Infinite Relative Deviation Count: 0
