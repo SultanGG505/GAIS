@@ -8,11 +8,12 @@ import time
 import os
 import matplotlib.pyplot as plt
 
+
 # --- Глобальные константы ---
 # Ограничение для разумного времени выполнения точного решения перебором
-EXACT_SOLUTION_CITY_LIMIT = 13
+EXACT_SOLUTION_CITY_LIMIT = 11
 # Процент популяции, заменяемый случайными особями в модели Де Фриза
-DE_VRIES_INJECTION_PERCENT = 0.05 # 5%
+DE_VRIES_INJECTION_PERCENT = 0.20 # 5%
 
 
 # --- Функции алгоритмов ---
@@ -99,7 +100,7 @@ def calculate_fitness(individual, distance_matrix):
     total_distance = 0
     num_nodes = len(distance_matrix)
 
-    if len(individual) != num_nodes + 1:
+    if not individual or len(individual) != num_nodes + 1:
          return float('inf')
 
     for i in range(len(individual) - 1):
@@ -147,52 +148,52 @@ def crossover(parents, num_cities):
 
         size = len(parent1)
 
-        if size != expected_route_length or size < 4:
-            if size == expected_route_length:
-                 offspring.extend([list(parent1), list(parent2)])
+        # Проверки на корректность родителей
+        if size != expected_route_length or size < 4 or not set(parent1[1:-1]) == expected_intermediate_cities or not set(parent2[1:-1]) == expected_intermediate_cities:
+            if len(parent1) == expected_route_length and set(parent1[1:-1]) == expected_intermediate_cities: offspring.append(list(parent1))
+            if len(parent2) == expected_route_length and set(parent2[1:-1]) == expected_intermediate_cities: offspring.append(list(parent2))
             continue
 
-        if (size - 1) - 1 < 2:
-             if size == expected_route_length:
-                 offspring.extend([list(parent1), list(parent2)])
-             continue
-
+        # Точки разреза, исключая начальный и конечный город
         point1, point2 = sorted(random.sample(range(1, size - 1), 2))
 
         child1 = [0] * size
         child2 = [0] * size
 
+        # Копируем центральный фрагмент
         child1[point1 : point2 + 1] = parent1[point1 : point2 + 1]
         child2[point1 : point2 + 1] = parent2[point1 : point2 + 1]
 
-        parent2_sequence = []
-        for city in parent2:
-            if 1 <= city <= num_cities and city not in child1[point1 : point2 + 1]:
-                parent2_sequence.append(city)
+        # Заполняем оставшиеся города в порядке их появления у другого родителя
+        parent2_sequence_filtered = [city for city in parent2 if city not in child1[point1 : point2 + 1]]
+        current_fill_idx = (point2 + 1) % size
+        filled_count = 0
+        while filled_count < len(parent2_sequence_filtered):
+            # Убедимся, что индекс находится в пределах допустимых для заполнения (не в центральном фрагменте)
+            # Это уже учтено логикой current_fill_idx и размером child1, но дополнительная проверка не повредит
+            if child1[current_fill_idx] == 0:
+                 child1[current_fill_idx] = parent2_sequence_filtered[filled_count]
+                 filled_count += 1
+            current_fill_idx = (current_fill_idx + 1) % size
 
-        child1_fill_pos = (point2 + 1) % size
-        for city in parent2_sequence:
-            while child1[child1_fill_pos] != 0:
-                child1_fill_pos = (child1_fill_pos + 1) % size
-            child1[child1_fill_pos] = city
+        parent1_sequence_filtered = [city for city in parent1 if city not in child2[point1 : point2 + 1]]
+        current_fill_idx = (point2 + 1) % size
+        filled_count = 0
+        while filled_count < len(parent1_sequence_filtered):
+            if child2[current_fill_idx] == 0:
+                 child2[current_fill_idx] = parent1_sequence_filtered[filled_count]
+                 filled_count += 1
+            current_fill_idx = (current_fill_idx + 1) % size
 
-        parent1_sequence = []
-        for city in parent1:
-            if 1 <= city <= num_cities and city not in child2[point1 : point2 + 1]:
-                parent1_sequence.append(city)
 
-        child2_fill_pos = (point2 + 1) % size
-        for city in parent1_sequence:
-            while child2[child2_fill_pos] != 0:
-                child2_fill_pos = (child2_fill_pos + 1) % size
-            child2[child2_fill_pos] = city
-
+        # Устанавливаем начальный и конечный город (должен быть 1)
         if size > 0:
             child1[0] = 1
             child1[-1] = 1
             child2[0] = 1
             child2[-1] = 1
 
+        # Финальная проверка на корректность потомков
         if set(child1[1:-1]) == expected_intermediate_cities and len(child1) == expected_route_length:
              offspring.append(child1)
 
@@ -216,6 +217,7 @@ def mutation(offspring, mutation_rate, num_cities):
              continue
 
         if random.random() < mutation_rate:
+            # Мутация только для промежуточных городов
             if size > 3:
                 indices_to_swap = range(1, size - 1)
                 if len(indices_to_swap) >= 2:
@@ -259,6 +261,8 @@ def run_genetic_algorithm_process(params, distance_matrix, model_type='darwin', 
     best_route_overall = None
     best_fitness_overall = float('inf')
 
+    fitness_history = []
+
     start_time = time.time()
 
     for generation in range(generations):
@@ -267,34 +271,24 @@ def run_genetic_algorithm_process(params, distance_matrix, model_type='darwin', 
 
         parents = selection(population, num_parents, distance_matrix)
         offspring = crossover(parents, num_cities)
-        mutated_offspring = mutation(offspring, mutation_rate, num_cities) # Применяем стандартную мутацию
+        mutated_offspring = mutation(offspring, mutation_rate, num_cities)
 
-        # Формируем следующее поколение из текущей популяции и мутировавших потомков
         population = replace_population(population, mutated_offspring, distance_matrix, population_size)
 
         # --- Модель Де Фриза: впрыскивание случайных особей ---
-        if model_type == 'devries' and population:
+        if model_type == 'devries' and population and num_cities > 1:
              num_to_inject = max(1, int(len(population) * DE_VRIES_INJECTION_PERCENT))
-             # Генерируем больше случайных, чтобы взять уникальные и нужного размера
-             injection_candidates = generate_population(num_cities, num_to_inject * 5) # Генерация новых случайных
-             if not injection_candidates: # Если не удалось сгенерировать (например, num_cities=0)
-                  injection_candidates = generate_population(num_cities, num_to_inject) # Попробуем еще раз
+             injection_candidates = generate_population(num_cities, num_to_inject * 5)
+             injection_candidates = [ind for ind in injection_candidates if calculate_fitness(ind, distance_matrix) != float('inf')]
 
+             if injection_candidates:
+                 indices_to_replace = random.sample(range(len(population)), min(num_to_inject, len(population)))
 
-             # Выбираем случайные индексы в текущей популяции для замены
-             indices_to_replace = random.sample(range(len(population)), min(num_to_inject, len(population)))
-
-             # Заменяем особей по выбранным индексам случайными из кандидатов
-             # Убедимся, что кандидатов достаточно
-             num_actual_inject = min(len(indices_to_replace), len(injection_candidates))
-             for k in range(num_actual_inject):
-                  population[indices_to_replace[k]] = random.choice(injection_candidates) # Заменяем случайным кандидатом
-
-
-             # Убедимся, что популяция не превышает population_size после возможной замены
-             # replace_population уже обеспечивает размер, но если мы впрыснули, а population_size был очень маленьким,
-             # может потребоваться дополнительная обрезка или более умная вставка.
-             # Текущая логика заменяет существующие особи, поэтому размер не меняется.
+                 for k in range(min(len(indices_to_replace), len(injection_candidates))):
+                      if injection_candidates:
+                           population[indices_to_replace[k]] = random.choice(injection_candidates)
+                      else:
+                           break
 
 
         if not population:
@@ -302,6 +296,7 @@ def run_genetic_algorithm_process(params, distance_matrix, model_type='darwin', 
                  results_callback(f"Предупреждение: Популяция ({model_type}) стала пустой на поколении {generation+1}\n")
             best_route_overall = None
             best_fitness_overall = float('inf')
+            fitness_history.append(best_fitness_overall)
             break
 
         if population:
@@ -311,16 +306,19 @@ def run_genetic_algorithm_process(params, distance_matrix, model_type='darwin', 
             if current_best_fitness < best_fitness_overall:
                 best_fitness_overall = current_best_fitness
                 best_route_overall = current_best_route
+
+            fitness_history.append(best_fitness_overall)
+
         else:
              best_route_overall = None
              best_fitness_overall = float('inf')
-             break
+             fitness_history.append(best_fitness_overall)
 
 
     end_time = time.time()
     elapsed_time = end_time - start_time
 
-    return best_route_overall, best_fitness_overall, elapsed_time
+    return best_route_overall, best_fitness_overall, elapsed_time, fitness_history
 
 
 def find_exact_solution_brute_force(distance_matrix, status_callback=None):
@@ -335,11 +333,6 @@ def find_exact_solution_brute_force(distance_matrix, status_callback=None):
     if num_cities > EXACT_SOLUTION_CITY_LIMIT:
         if status_callback:
              status_callback(f"Пропуск точного решения: > {EXACT_SOLUTION_CITY_LIMIT} городов.")
-             # Дополнительное предупреждение, если эту функцию вызвали, несмотря на проверку в start_process
-             # messagebox.showwarning("Внимание", f"Запущен расчет точного решения для {num_cities} городов. Это может занять очень много времени!")
-        # Возвращаем None, если расчет пропущен из-за лимита
-        # Эта логика дублируется в start_process/run_single/run_batch,
-        # но явный возврат None здесь делает функцию самодостаточной при вызове.
         return None, float('inf'), 0.0
 
 
@@ -352,14 +345,21 @@ def find_exact_solution_brute_force(distance_matrix, status_callback=None):
 
     start_time = time.time()
 
-    for permutation in itertools.permutations(intermediate_cities):
-        current_route_middle = list(permutation)
-        current_full_route = [1] + current_route_middle + [1]
-        current_distance = calculate_fitness(current_full_route, distance_matrix)
+    try: # Добавим try/except для возможности прерывания, если станет слишком долго (хотя GUI не дает такой возможности)
+        for permutation in itertools.permutations(intermediate_cities):
+            current_route_middle = list(permutation)
+            current_full_route = [1] + current_route_middle + [1]
+            current_distance = calculate_fitness(current_full_route, distance_matrix)
 
-        if current_distance < min_distance:
-            min_distance = current_distance
-            best_route = current_full_route
+            if current_distance < min_distance:
+                min_distance = current_distance
+                best_route = current_full_route
+    except Exception as e:
+         # Этот блок может сработать, если пользователь прервет выполнение извне,
+         # но в рамках Tkinter GUI это маловероятно без выделенного потока.
+         print(f"Ошибка или прерывание во время точного решения: {e}")
+         return None, float('inf'), time.time() - start_time # Возвращаем частичный результат или ошибку
+
 
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -397,6 +397,9 @@ class TSPSolverGUI:
 
         # Переменные для режимов работы
         self.mode_var = tk.StringVar(value='single') # 'single' или 'batch'
+        # Переменная для включения/отключения точного решения
+        self.enable_exact_var = tk.BooleanVar(value=True)
+
 
         # Переменная для хранения текущей матрицы расстояний
         self.distance_matrix = None
@@ -439,9 +442,14 @@ class TSPSolverGUI:
         batch_mode_radio = tk.Radiobutton(task_frame, text="Пакетный запуск", variable=self.mode_var, value='batch', command=self.toggle_batch_options)
         batch_mode_radio.grid(row=4, column=1, sticky="w")
 
+        # Опция включения/отключения точного решения
+        self.enable_exact_checkbox = tk.Checkbutton(task_frame, text="Включить точное решение", variable=self.enable_exact_var)
+        self.enable_exact_checkbox.grid(row=5, column=0, columnspan=2, sticky="w")
+
+
         # Опции пакетного режима (изначально скрыты или неактивны)
         self.batch_options_frame = tk.Frame(task_frame)
-        self.batch_options_frame.grid(row=5, column=0, columnspan=2, sticky="ew")
+        self.batch_options_frame.grid(row=6, column=0, columnspan=2, sticky="ew") # Сдвинуто вниз на 1 строку
         tk.Label(self.batch_options_frame, text="Итераций (пакет):").grid(row=0, column=0, sticky="w")
         self.batch_iterations_entry = tk.Entry(self.batch_options_frame, textvariable=self.batch_iterations_var)
         self.batch_iterations_entry.grid(row=0, column=1, sticky="ew")
@@ -527,8 +535,9 @@ class TSPSolverGUI:
                 self.run_button.config(state=tk.DISABLED)
                 return
 
-            if new_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 messagebox.showwarning("Предупреждение", f"Для количества городов > {EXACT_SOLUTION_CITY_LIMIT} поиск точного решения перебором (и пакетный режим с ним) будет очень медленным или невозможным в рамках разумного времени.")
+            # Предупреждение о долгом расчете точного решения
+            if new_num_cities > EXACT_SOLUTION_CITY_LIMIT and self.enable_exact_var.get():
+                 messagebox.showwarning("Предупреждение", f"Для количества городов > {EXACT_SOLUTION_CITY_LIMIT} поиск точного решения перебором (и пакетный режим с ним) будет очень медленным или невозможным в рамках разумного времени. Рекомендуется отключить точное решение или уменьшить количество городов.")
 
 
             self.distance_matrix = generate_random_distance_matrix(new_num_cities)
@@ -569,8 +578,9 @@ class TSPSolverGUI:
             self.update_status(f"Матрица готова ({self.current_num_cities} городов).")
             self.run_button.config(state=tk.NORMAL)
 
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 messagebox.showwarning("Предупреждение", f"Для загруженной матрицы с {self.current_num_cities} городами поиск точного решения перебором (и пакетный режим с ним) будет очень медленным или невозможным в рамках разумного времени.")
+            # Предупреждение о долгом расчете точного решения
+            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT and self.enable_exact_var.get():
+                 messagebox.showwarning("Предупреждение", f"Для загруженной матрицы с {self.current_num_cities} городами поиск точного решения перебором (и пакетный режим с ним) будет очень медленным или невозможным в рамках разумного времени. Рекомендуется отключить точное решение или уменьшить количество городов.")
 
         else:
             self.distance_matrix = None
@@ -618,14 +628,16 @@ class TSPSolverGUI:
 
                 f.write("\n")
                 f.write(f"--- Exact Solution ---\n")
-                if exact_results['route']:
+                if exact_results['route']: # Проверяем, был ли найден маршрут (т.е. расчет не был пропущен)
                     f.write(f"Exact Best Route: {' '.join(map(str, exact_results['route']))}\n")
                     exact_dist_str = f"{exact_results['distance']:.4f}" if exact_results['distance'] != float('inf') else "inf"
                     f.write(f"Exact Best Distance: {exact_dist_str}\n")
+                    f.write(f"Exact Time (s): {exact_results['time']:.4f}\n")
                 else:
-                     f.write("Exact Best Route: N/A (Calculation skipped or failed)\n")
+                     f.write("Exact Best Route: N/A\n") # Если маршрут None, значит расчет был пропущен или не удался
                      f.write("Exact Best Distance: N/A\n")
-                f.write(f"Exact Time (s): {exact_results['time']:.4f}\n")
+                     f.write(f"Exact Time (s): {exact_results['time']:.4f} (Calculation skipped or failed)\n") # Время может быть 0.0 если скипнут
+
 
             self.append_result(f"\nРезультаты одиночного запуска сохранены в файл: {results_filepath}\n")
 
@@ -655,10 +667,10 @@ class TSPSolverGUI:
                 f.write(f"GA Num Parents: {self.num_parents_var.get()}\n")
                 f.write(f"GA Mutation Rate: {self.mutation_rate_var.get()}\n")
                 f.write(f"GA Generations: {self.generations_var.get()}\n")
-                f.write(f"De Vries Injection Percent: {DE_VRIES_INJECTION_PERCENT*100}%\n") # Добавили параметр Де Фриза
+                f.write(f"De Vries Injection Percent: {DE_VRIES_INJECTION_PERCENT*100}%\n")
+                f.write(f"Exact Solution Enabled: {self.enable_exact_var.get()}\n") # Добавили флаг включения точного решения
                 f.write("\n")
                 f.write("--- Iteration Data ---\n")
-                # Добавили столбцы для результатов Де Фриза
                 f.write("Iter,Darwin_Dist,Darwin_Time,DeVries_Dist,DeVries_Time,Exact_Dist,Exact_Time\n")
                 for i, res in enumerate(all_results):
                     darwin_dist_str = f"{res['darwin_distance']:.4f}" if res['darwin_distance'] != float('inf') else "inf"
@@ -670,7 +682,11 @@ class TSPSolverGUI:
                 f.write("--- Summary Statistics ---\n")
                 for key, value in summary_stats.items():
                     if isinstance(value, float):
-                         f.write(f"{key}: {value:.4f}\n")
+                         # Проверяем на inf перед форматированием как .4f
+                         if value == float('inf'):
+                             f.write(f"{key}: inf\n")
+                         else:
+                            f.write(f"{key}: {value:.4f}\n")
                     else:
                          f.write(f"{key}: {value}\n")
 
@@ -681,14 +697,51 @@ class TSPSolverGUI:
             messagebox.showerror("Ошибка сохранения пакетных результатов", f"Не удалось сохранить файл пакетных результатов {batch_results_filepath}: {e}")
 
 
+    def plot_fitness_history(self, darwin_history, devries_history, num_generations, num_cities):
+        """Строит график зависимости лучшего фитнеса от поколения."""
+        plt.figure(figsize=(10, 6))
+
+        generations_axis = range(num_generations)
+
+        last_darwin_fitness = darwin_history[-1] if darwin_history and darwin_history[-1] != float('inf') else float('inf')
+        darwin_history_padded = darwin_history + [last_darwin_fitness] * (num_generations - len(darwin_history))
+
+        last_devries_fitness = devries_history[-1] if devries_history and devries_history[-1] != float('inf') else float('inf')
+        devries_history_padded = devries_history + [last_devries_fitness] * (num_generations - len(devries_history))
+
+
+        plt.plot(generations_axis, darwin_history_padded, label='Дарвин ГА', color='blue')
+        plt.plot(generations_axis, devries_history_padded, label='Де Фриз ГА', color='purple')
+
+        plt.xlabel("Поколение")
+        plt.ylabel("Лучшая дистанция (фитнес)")
+        plt.title(f"История фитнеса ГА ({num_cities} городов, {num_generations} поколений) - Одиночный запуск") # Уточнен заголовок
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.xlim(0, num_generations - 1)
+
+        all_finite_fitness = [f for f in darwin_history_padded + devries_history_padded if f != float('inf')]
+        if all_finite_fitness:
+             min_y = min(all_finite_fitness) * 0.95 # Меньший отступ
+             max_y = max(all_finite_fitness) * 1.05 # Меньший отступ
+             if min_y >= max_y: # Если все значения одинаковы или только одно
+                 avg_y = all_finite_fitness[0]
+                 min_y = avg_y * 0.9
+                 max_y = avg_y * 1.1
+             plt.ylim(min_y, max_y)
+
+        plt.show()
+
+
     def plot_batch_results(self, all_results, summary_stats):
         """Строит графики сравнения результатов пакетного запуска."""
         if not all_results:
             self.append_result("Нет данных для построения графиков пакетного запуска.\n")
             return
 
-        avg_ga_distance = summary_stats.get("Average GA Distance", float('inf')) # Still needed for context if needed
-        avg_exact_distance = summary_stats.get("Average Exact Distance", float('inf')) # Still needed for context if needed
+        # Проверяем, был ли запущен точный алгоритм вообще
+        exact_was_run = self.enable_exact_var.get() and summary_stats.get("Average Exact Distance", float('inf')) != float('inf') # Был включен И получены конечные дистанции
+
         avg_darwin_time = summary_stats.get("Average Darwin Time (s)", 0.0)
         avg_devries_time = summary_stats.get("Average De Vries Time (s)", 0.0)
         avg_exact_time = summary_stats.get("Average Exact Time (s)", 0.0)
@@ -706,50 +759,81 @@ class TSPSolverGUI:
         # --- График средней относительной ошибки ГА (Дарвин vs Де Фриз) ---
         plt.subplot(1, 2, 1)
 
-        labels_dev = ['Дарвин ГА', 'Де Фриз ГА'] # Метки для столбцов
-        deviation_values = [avg_darwin_relative_deviation, avg_devries_relative_deviation] # Значения для столбцов
+        if exact_was_run: # Строим график ошибки только если точное решение было успешно получено хотя бы в части итераций
+             labels_dev = ['Дарвин ГА', 'Де Фриз ГА']
+             deviation_values = [avg_darwin_relative_deviation, avg_devries_relative_deviation]
 
-        bars_deviation = plt.bar(labels_dev, deviation_values, color=['blue', 'purple'])
+             bars_deviation = plt.bar(labels_dev, deviation_values, color=['blue', 'purple'])
 
-        plt.ylabel("Отклонение (%)")
-        plt.title(f"Средняя ошибка ГА относительно точного решения ({iterations} итераций, {num_cities} городов)")
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+             plt.ylabel("Отклонение (%)")
+             plt.title(f"Средняя ошибка ГА относительно точного решения ({iterations} итераций, {num_cities} городов)")
+             plt.grid(axis='y', linestyle='--', alpha=0.7)
 
-        # Добавляем значения на столбцы
-        for bar in bars_deviation:
-             yval = bar.get_height()
-             plt.text(bar.get_x() + bar.get_width()/2, yval, f'{yval:.2f}%', va='bottom', ha='center')
+             for bar in bars_deviation:
+                  yval = bar.get_height()
+                  if yval != float('inf'):
+                     plt.text(bar.get_x() + bar.get_width()/2, yval, f'{yval:.2f}%', va='bottom', ha='center')
+                  elif yval == float('inf'):
+                      plt.text(bar.get_x() + bar.get_width()/2, plt.ylim()[1]*0.9, 'inf %', va='top', ha='center', color='red')
 
-        # Добавить информацию о том, как часто ГА находил оптимум (для обеих моделей)
-        darwin_optimal_percent = summary_stats.get("Darwin Optimal Found Percentage (%)", 0)
-        devries_optimal_percent = summary_stats.get("De Vries Optimal Found Percentage (%)", 0)
 
-        # Размещение текста может потребовать настройки в зависимости от значений
-        plt.text(0.5, plt.ylim()[1] * 0.95, f'Оптимум найден: Дарвин {darwin_optimal_percent:.1f}%, Де Фриз {devries_optimal_percent:.1f}%',
-                 ha='center', va='top', fontsize=9, color='dimgray')
+             # Добавить информацию о том, как часто ГА находил оптимум
+             darwin_optimal_percent = summary_stats.get("Darwin Optimal Found Percentage (%)", 0)
+             devries_optimal_percent = summary_stats.get("De Vries Optimal Percentage (%)", 0)
+
+             plt.text(0.5, plt.ylim()[1] * 0.85, f'Оптимум найден: Дарвин {darwin_optimal_percent:.1f}%, Де Фриз {devries_optimal_percent:.1f}%',
+                      ha='center', va='top', fontsize=9, color='dimgray')
+
+             # Добавить информацию о бесконечных ошибках
+             darwin_inf_err = summary_stats.get("Darwin Infinite Relative Deviation Count", 0)
+             devries_inf_err = summary_stats.get("De Vries Infinite Relative Deviation Count", 0)
+             if darwin_inf_err > 0 or devries_inf_err > 0:
+                  plt.text(0.5, plt.ylim()[1] * 0.75, f'Беск. откл. (опт=0, ГА>0): Дарвин {darwin_inf_err}, Де Фриз {devries_inf_err}',
+                           ha='center', va='top', fontsize=8, color='darkred')
+        else:
+             # Если точное решение было отключено или не удалось, строим график средних дистанций ГА
+             labels_dist = ['Дарвин ГА', 'Де Фриз ГА']
+             avg_distances = [summary_stats.get("Average Darwin Distance", float('inf')), summary_stats.get("Average De Vries Distance", float('inf'))]
+             avg_distances_finite = [d if d != float('inf') else 0 for d in avg_distances] # Используем 0 для графика, если inf
+
+             bars_dist = plt.bar(labels_dist, avg_distances_finite, color=['blue', 'purple'])
+             plt.ylabel("Средняя дистанция")
+             plt.title(f"Средние дистанции ГА ({iterations} итераций, {num_cities} городов)")
+             plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+             for i, bar in enumerate(bars_dist):
+                  yval = bar.get_height()
+                  if avg_distances[i] != float('inf'): # Показывать значение, если оно не inf
+                     plt.text(bar.get_x() + bar.get_width()/2, yval, f'{avg_distances[i]:.2f}', va='bottom', ha='center')
+                  else: # Показывать 'inf' если среднее бесконечно
+                       plt.text(bar.get_x() + bar.get_width()/2, yval, 'inf', va='bottom', ha='center', color='red')
 
 
         # --- График сравнения среднего времени (Дарвин vs Де Фриз vs Точное) ---
         plt.subplot(1, 2, 2)
 
-        labels_time = ['Дарвин ГА', 'Де Фриз ГА', 'Точное']
-        avg_times = [avg_darwin_time, avg_devries_time, avg_exact_time]
+        labels_time = ['Дарвин ГА', 'Де Фриз ГА']
+        avg_times = [avg_darwin_time, avg_devries_time]
+        colors_time = ['blue', 'purple']
 
-        bars_time = plt.bar(labels_time, avg_times, color=['blue', 'purple', 'red']) # Цвета для трех методов
+        if exact_was_run: # Добавляем точное решение только если оно было запущено
+             labels_time.append('Точное')
+             avg_times.append(avg_exact_time)
+             colors_time.append('red')
+
+
+        bars_time = plt.bar(labels_time, avg_times, color=colors_time)
         plt.ylabel("Среднее время (сек)")
         plt.title(f"Среднее время выполнения ({iterations} итераций, {num_cities} городов)")
         plt.grid(axis='y', linestyle='--', alpha=0.7)
-        # Логарифмическая шкала только если есть большая разница
-        all_avg_times = [t for t in avg_times if t is not None and t > 0] # Убираем None и 0 для расчета лог. шкалы
+        all_avg_times = [t for t in avg_times if t is not None and t > 0]
         if len(all_avg_times) > 1 and (max(all_avg_times) / min(all_avg_times) > 100):
              plt.yscale('log')
 
         for bar in bars_time:
             yval = bar.get_height()
-            if yval is not None and (yval > 0 or all(t == 0 for t in avg_times)): # Показывать 0 только если все 0
+            if yval is not None and yval >= 0:
                  plt.text(bar.get_x() + bar.get_width()/2, yval, f'{yval:.4f}', va='bottom', ha='center')
-            elif yval == 0 and not any(t > 0 for t in avg_times):
-                  plt.text(bar.get_x() + bar.get_width()/2, yval, f'{yval:.4f}', va='bottom', ha='center')
 
 
         plt.tight_layout()
@@ -764,9 +848,16 @@ class TSPSolverGUI:
 
         mode = self.mode_var.get()
 
+        # Дополнительная проверка для пакетного режима, если включено точное решение
+        if mode == 'batch' and self.enable_exact_var.get() and self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
+             messagebox.showerror("Ошибка конфигурации", f"Пакетный режим с точным решением возможен только для количества городов <= {EXACT_SOLUTION_CITY_LIMIT}. Пожалуйста, уменьшите количество городов или отключите точное решение.")
+             return
+
+
         self.run_button.config(state=tk.DISABLED)
         self.num_cities_entry.config(state='readonly')
         self.batch_iterations_entry.config(state='readonly')
+        self.enable_exact_checkbox.config(state=tk.DISABLED) # Отключаем чекбокс во время работы
 
 
         try:
@@ -787,6 +878,7 @@ class TSPSolverGUI:
             self.run_button.config(state=tk.NORMAL)
             self.num_cities_entry.config(state='normal')
             self.batch_iterations_entry.config(state='normal')
+            self.enable_exact_checkbox.config(state=tk.NORMAL) # Включаем чекбокс обратно
 
 
     def _run_single_process(self):
@@ -796,7 +888,10 @@ class TSPSolverGUI:
 
         darwin_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
         devries_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        exact_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
+        exact_results = {'route': None, 'distance': float('inf'), 'time': 0.0} # Начальное состояние - пропущено
+        darwin_fitness_history = []
+        devries_fitness_history = []
+
 
         try:
             ga_params = {
@@ -810,9 +905,12 @@ class TSPSolverGUI:
                  messagebox.showerror("Ошибка ввода", "Некорректные параметры ГА.")
                  return
 
+            num_generations = ga_params['generations']
+
+
             # --- Запуск ГА (Дарвин) ---
             self.append_result("\n--- Запуск Генетического алгоритма (Дарвин) ---\n")
-            darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
+            darwin_route, darwin_distance, darwin_time, darwin_fitness_history = run_genetic_algorithm_process(
                 ga_params,
                 self.distance_matrix,
                 model_type='darwin',
@@ -827,8 +925,8 @@ class TSPSolverGUI:
 
             # --- Запуск ГА (Де Фриз) ---
             self.append_result("\n--- Запуск Генетического алгоритма (Де Фриз) ---\n")
-            devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
-                ga_params, # Используем те же параметры ГА
+            devries_route, devries_distance, devries_time, devries_fitness_history = run_genetic_algorithm_process(
+                ga_params,
                 self.distance_matrix,
                 model_type='devries',
                 status_callback=self.update_status
@@ -840,63 +938,92 @@ class TSPSolverGUI:
             self.append_result(f"Время выполнения Де Фриз ГА: {devries_results['time']:.4f} сек.\n")
 
 
-            # --- Запуск поиска точного решения ---
-            self.append_result("\n--- Запуск поиска точного решения (одиночный) ---\n")
+            # --- Запуск поиска точного решения (условно) ---
+            self.append_result("\n--- Поиск точного решения ---\n")
 
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 self.append_result(f"Пропуск поиска точного решения перебором: слишком много городов ({self.current_num_cities} > {EXACT_SOLUTION_CITY_LIMIT}).\n")
-                 exact_route, exact_distance, exact_time = None, float('inf'), 0.0
-                 self.update_status("Расчеты завершены.")
+            if self.enable_exact_var.get(): # Проверяем состояние чекбокса
+                 if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
+                      self.append_result(f"Пропуск поиска точного решения перебором: слишком много городов ({self.current_num_cities} > {EXACT_SOLUTION_CITY_LIMIT}).\n")
+                      # exact_results останется в исходном состоянии {'route': None, 'distance': float('inf'), 'time': 0.0}
+                      self.update_status("Расчеты завершены (Точное решение пропущено из-за лимита).")
+                 else:
+                      exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
+                          self.distance_matrix,
+                          status_callback=self.update_status
+                      )
+                      exact_results = {'route': exact_route, 'distance': exact_distance, 'time': exact_time}
+                      self.append_result(f"Оптимальный маршрут: {' -> '.join(map(str, exact_results['route'])) if exact_results['route'] else 'N/A'}\n")
+                      exact_dist_str = f"{exact_results['distance']:.4f}" if exact_results['distance'] != float('inf') else "inf"
+                      self.append_result(f"Минимальное расстояние: {exact_dist_str}\n")
+                      self.append_result(f"Время выполнения точного решения: {exact_results['time']:.4f} сек.\n")
+                      self.update_status("Расчеты завершены.")
             else:
-                 exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                     self.distance_matrix,
-                     status_callback=self.update_status
-                 )
-                 self.update_status("Расчеты завершены.")
-
-            exact_results = {'route': exact_route, 'distance': exact_distance, 'time': exact_time}
-            self.append_result(f"Оптимальный маршрут: {' -> '.join(map(str, exact_results['route'])) if exact_results['route'] else 'N/A'}\n")
-            exact_dist_str = f"{exact_results['distance']:.4f}" if exact_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Минимальное расстояние: {exact_dist_str}\n")
-            self.append_result(f"Время выполнения точного решения: {exact_results['time']:.4f} сек.\n")
+                 self.append_result("Поиск точного решения отключен пользователем.\n")
+                 # exact_results останется в исходном состоянии {'route': None, 'distance': float('inf'), 'time': 0.0}
+                 self.update_status("Расчеты завершены (Точное решение отключено).")
 
 
             # --- Сводка сравнения ---
             self.append_result("\n--- Сводка сравнения (одиночный) ---\n")
-            # Сравнение расстояний
-            methods = {'Дарвин ГА': darwin_results, 'Де Фриз ГА': devries_results, 'Точное': exact_results}
+            methods = {'Дарвин ГА': darwin_results, 'Де Фриз ГА': devries_results}
+            if exact_results['route'] is not None: # Добавляем точное решение в сравнение, только если оно было найдено (не пропущено и не None)
+                methods['Точное'] = exact_results
+
             min_dist = float('inf')
             best_method = 'N/A'
 
-            # Находим лучшее из всех найденных (включая точное)
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and res['distance'] < min_dist:
-                      min_dist = res['distance']
-                      best_method = name
+            # Находим лучшее из всех *найденных* решений
+            found_solutions = {name: res for name, res in methods.items() if res['distance'] != float('inf')}
+            if found_solutions:
+                min_dist = min(found_solutions.values(), key=lambda x: x['distance'])['distance']
+                best_method = min(found_solutions.items(), key=lambda item: item[1]['distance'])[0]
+                self.append_result(f"Лучшее из найденных: {min_dist:.4f} ({best_method})\n")
+            else:
+                 self.append_result("Нет найденных решений для сравнения.\n")
 
-            self.append_result(f"Лучшее из найденных: {min_dist:.4f} ({best_method})\n")
 
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and min_dist != float('inf'):
-                      abs_dev = abs(res['distance'] - min_dist)
-                      self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Отклонение от лучшего: {abs_dev:.4f})\n")
-                      if min_dist > 0:
-                           rel_dev = (abs_dev / min_dist) * 100.0
-                           self.append_result(f"  Отн. откл. от лучшего: {rel_dev:.2f} %\n")
-                      elif abs_dev > 0:
-                           self.append_result(f"  Отн. откл. от лучшего: inf %\n")
+            # Сравнение с точным решением, если оно было найдено
+            if exact_results['distance'] != float('inf'):
+                 self.append_result(f"\n--- Отклонение от точного решения ---\n")
+                 for name, res in methods.items():
+                      if res['distance'] != float('inf'):
+                           abs_dev = abs(res['distance'] - exact_results['distance'])
+                           self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Отклонение от точного: {abs_dev:.4f})\n")
+                           if exact_results['distance'] > 0:
+                                rel_dev = (abs_dev / exact_results['distance']) * 100.0
+                                self.append_result(f"  Отн. откл. от точного: {rel_dev:.2f} %\n")
+                           elif abs_dev > 0:
+                                self.append_result(f"  Отн. откл. от точного: inf %\n")
+                           else:
+                                 self.append_result(f"  Отн. откл. от точного: 0.0 %\n")
+                      else:
+                           self.append_result(f"Расстояние {name}: N/A (Не найден корректный маршрут)\n")
+            elif exact_results['route'] is not None: # Точное решение запущено, но не найдено (например, inf)
+                 self.append_result("\nТочное решение было запущено, но не дало конечного результата.\n")
+            else: # Точное решение было отключено или пропущено из-за лимита
+                  self.append_result("\nТочное решение было отключено или пропущено, сравнение отклонений невозможно.\n")
 
-                 elif res['distance'] != float('inf'):
-                     self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Точное решение не найдено для сравнения)\n")
-                 else:
-                      self.append_result(f"Расстояние {name}: N/A (Не найден корректный маршрут)\n")
 
             # Сравнение времени
-            self.append_result(f"Время выполнения: Дарвин ГА {darwin_results['time']:.4f} сек., Де Фриз ГА {devries_results['time']:.4f} сек., Точное {exact_results['time']:.4f} сек.\n")
+            self.append_result(f"\nВремя выполнения: Дарвин ГА {darwin_results['time']:.4f} сек., Де Фриз ГА {devries_results['time']:.4f} сек.")
+            if exact_results['route'] is not None or exact_results['time'] > 0: # Показывать время точного решения, если оно было запущено или заняло время
+                 self.append_result(f", Точное {exact_results['time']:.4f} сек.\n")
+            else:
+                 self.append_result("\n")
 
 
-            # Сохранение всех результатов в файл (для одиночного режима)
             self.save_single_results_to_file(darwin_results, devries_results, exact_results)
+
+            # --- Построение графика истории фитнеса ---
+            if self.current_num_cities > 1 and num_generations > 0:
+                 self.plot_fitness_history(
+                     darwin_fitness_history,
+                     devries_fitness_history,
+                     num_generations,
+                     self.current_num_cities
+                 )
+            else:
+                 self.append_result("\nГрафик истории фитнеса не построен (слишком мало городов или поколений).\n")
 
 
         except ValueError:
@@ -923,9 +1050,10 @@ class TSPSolverGUI:
                  messagebox.showerror("Ошибка ввода", "Пожалуйста, введите целое число для количества итераций.")
                  return
 
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 messagebox.showerror("Ошибка", f"Пакетный режим с точным решением возможен только для количества городов <= {EXACT_SOLUTION_CITY_LIMIT}.")
-                 return
+            # Эта проверка перемещена в start_process, чтобы она срабатывала ДО отключения элементов управления
+            # if self.enable_exact_var.get() and self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
+            #      messagebox.showerror("Ошибка", f"Пакетный режим с точным решением возможен только для количества городов <= {EXACT_SOLUTION_CITY_LIMIT}.")
+            #      return
 
             self.clear_results()
             self.append_result(f"Запуск пакетного режима ({num_iterations} итераций) для {self.current_num_cities} городов...\n")
@@ -948,25 +1076,28 @@ class TSPSolverGUI:
                 self.update_status(f"Пакетный режим: Итерация {i + 1}/{num_iterations}")
                 current_matrix = generate_random_distance_matrix(self.current_num_cities)
 
-                # Запуск ГА (Дарвин)
-                darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
+                darwin_route, darwin_distance, darwin_time, _ = run_genetic_algorithm_process(
                     ga_params,
                     current_matrix,
                     model_type='darwin'
                 )
 
-                # Запуск ГА (Де Фриз) - те же параметры, новая матрица
-                devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
+                devries_route, devries_distance, devries_time, _ = run_genetic_algorithm_process(
                     ga_params,
                     current_matrix,
                     model_type='devries'
                 )
 
+                # --- Условно запускаем точное решение в цикле ---
+                exact_distance = float('inf')
+                exact_time = 0.0 # Время будет 0.0, если скипнуто
+                if self.enable_exact_var.get(): # Проверяем состояние чекбокса перед вызовом
+                    # Проверка на EXACT_SOLUTION_CITY_LIMIT уже была в start_process
+                    exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
+                        current_matrix # Используем ту же матрицу
+                    )
+                    # Здесь exact_route может быть None, а exact_distance - inf, если find_exact_solution_brute_force пропустил расчет из-за лимита
 
-                # Запуск точного решения - та же матрица
-                exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                    current_matrix
-                )
 
                 all_results.append({
                     'iter': i + 1,
@@ -974,8 +1105,8 @@ class TSPSolverGUI:
                     'darwin_time': darwin_time,
                     'devries_distance': devries_distance,
                     'devries_time': devries_time,
-                    'exact_distance': exact_distance,
-                    'exact_time': exact_time
+                    'exact_distance': exact_distance, # Может быть inf, если скипнуто
+                    'exact_time': exact_time # Может быть 0.0, если скипнуто
                 })
 
 
@@ -985,16 +1116,20 @@ class TSPSolverGUI:
             # Расчет сводной статистики
             darwin_distances = [r['darwin_distance'] for r in all_results if r['darwin_distance'] != float('inf')]
             devries_distances = [r['devries_distance'] for r in all_results if r['devries_distance'] != float('inf')]
-            exact_distances = [r['exact_distance'] for r in all_results if r['exact_distance'] != float('inf')] # В пакетном режиме должны быть валидны
+            # Только валидные exact_distances для расчета статистики по ним
+            valid_exact_distances = [r['exact_distance'] for r in all_results if r['exact_distance'] != float('inf')]
+
 
             summary_stats = {}
             summary_stats["Average Darwin Distance"] = sum(darwin_distances) / len(darwin_distances) if darwin_distances else float('inf')
             summary_stats["Average De Vries Distance"] = sum(devries_distances) / len(devries_distances) if devries_distances else float('inf')
-            summary_stats["Average Exact Distance"] = sum(exact_distances) / len(exact_distances) if exact_distances else float('inf')
+            summary_stats["Average Exact Distance"] = sum(valid_exact_distances) / len(valid_exact_distances) if valid_exact_distances else float('inf') # Рассчитываем среднее только по успешным итерациям точного решения
 
             summary_stats["Average Darwin Time (s)"] = sum(r['darwin_time'] for r in all_results) / num_iterations
             summary_stats["Average De Vries Time (s)"] = sum(r['devries_time'] for r in all_results) / num_iterations
+            # Время точного решения усредняем по всем итерациям, даже если оно было 0.0 из-за пропуска
             summary_stats["Average Exact Time (s)"] = sum(r['exact_time'] for r in all_results) / num_iterations
+
 
             # Сравнение с оптимумом для каждой модели ГА
             darwin_optimal_count = sum(1 for r in all_results if r['darwin_distance'] != float('inf') and r['exact_distance'] != float('inf') and abs(r['darwin_distance'] - r['exact_distance']) < 1e-6)
@@ -1003,7 +1138,7 @@ class TSPSolverGUI:
 
             devries_optimal_count = sum(1 for r in all_results if r['devries_distance'] != float('inf') and r['exact_distance'] != float('inf') and abs(r['devries_distance'] - r['exact_distance']) < 1e-6)
             summary_stats["De Vries Optimal Found Count"] = devries_optimal_count
-            summary_stats["De Vries Optimal Found Percentage (%)"] = (devries_optimal_count / num_iterations) * 100.0 if num_iterations > 0 else 0
+            summary_stats["De Vries Optimal Percentage (%)"] = (devries_optimal_count / num_iterations) * 100.0 if num_iterations > 0 else 0
 
 
             # Расчет среднего относительного отклонения для каждой модели ГА
@@ -1012,291 +1147,17 @@ class TSPSolverGUI:
 
             for r in all_results:
                 if r['exact_distance'] != float('inf') and r['exact_distance'] > 0: # Можем посчитать отн. отклонение только если точное решение валидно и > 0
-                     if r['darwin_distance'] != float('inf'):
+                    if r['darwin_distance'] != float('inf'):
                           darwin_relative_deviations.append(abs(r['darwin_distance'] - r['exact_distance']) / r['exact_distance'] * 100.0)
-                     # else: darwin_relative_deviations.append(float('inf')) # Можно добавить inf, но для среднего лучше исключить
-
-                     if r['devries_distance'] != float('inf'):
+                    if r['devries_distance'] != float('inf'):
                           devries_relative_deviations.append(abs(r['devries_distance'] - r['exact_distance']) / r['exact_distance'] * 100.0)
-                     # else: devries_relative_deviations.append(float('inf'))
+                elif r['exact_distance'] == 0: # Если точное решение 0
+                    if r['darwin_distance'] > 0: darwin_relative_deviations.append(float('inf')) # Бесконечная ошибка
+                    elif r['darwin_distance'] == 0: darwin_relative_deviations.append(0.0) # Ошибка 0%
+                    if r['devries_distance'] > 0: devries_relative_deviations.append(float('inf')) # Бесконечная ошибка
+                    elif r['devries_distance'] == 0: devries_relative_deviations.append(0.0) # Ошибка 0%
+                # else: # Если точное решение inf (скипнуто или не найдено), отклонение от точного не считается
 
-                # else: # Если точное решение inf или 0
-                     # Пропускаем или обрабатываем отдельно
-
-            summary_stats["Average Darwin Relative Deviation (%)"] = sum(darwin_relative_deviations) / len(darwin_relative_deviations) if darwin_relative_deviations else 0.0
-            summary_stats["Average De Vries Relative Deviation (%)"] = sum(devries_relative_deviations) / len(devries_relative_deviations) if devries_relative_deviations else 0.0
-
-
-            for key, value in summary_stats.items():
-                if isinstance(value, float):
-                     self.append_result(f"{key}: {value:.4f}\n")
-                else:
-                     self.append_result(f"{key}: {value}\n")
-
-            self.save_batch_results_to_file(all_results, summary_stats)
-
-            self.plot_batch_results(all_results, summary_stats)
-
-
-            self.update_status("Пакетный режим завершен. Графики показаны.")
-
-
-        except ValueError:
-            messagebox.showerror("Ошибка ввода", "Пожалуйста, введите числовые значения в поля параметров пакетного режима.")
-            self.update_status("Ошибка ввода параметров пакетного режима.")
-        except Exception as e:
-            messagebox.showerror("Произошла ошибка", f"Общая ошибка при выполнении пакетного режима: {e}")
-            import traceback
-            print(traceback.format_exc())
-            self.update_status("Произошла ошибка при выполнении пакетного режима.")
-            raise
-
-
-    def _run_single_process(self):
-        """Выполняет одиночный запуск ГА (Дарвин и Де Фриз) и точного решения."""
-        self.clear_results()
-        self.append_result(f"Запуск одиночного расчета для {self.current_num_cities} городов...\n")
-
-        darwin_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        devries_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        exact_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-
-        try:
-            ga_params = {
-                'population_size': self.population_size_var.get(),
-                'num_parents': self.num_parents_var.get(),
-                'mutation_rate': self.mutation_rate_var.get(),
-                'generations': self.generations_var.get()
-            }
-            if ga_params['population_size'] <= 0 or ga_params['num_parents'] <= 0 or ga_params['num_parents'] > ga_params['population_size'] or \
-               not (0.0 <= ga_params['mutation_rate'] <= 1.0) or ga_params['generations'] <= 0:
-                 messagebox.showerror("Ошибка ввода", "Некорректные параметры ГА.")
-                 return
-
-            # --- Запуск ГА (Дарвин) ---
-            self.append_result("\n--- Запуск Генетического алгоритма (Дарвин) ---\n")
-            darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
-                ga_params,
-                self.distance_matrix,
-                model_type='darwin',
-                status_callback=self.update_status
-            )
-            darwin_results = {'route': darwin_route, 'distance': darwin_distance, 'time': darwin_time}
-            self.append_result(f"Лучший найденный маршрут Дарвин ГА: {' -> '.join(map(str, darwin_results['route'])) if darwin_results['route'] else 'N/A'}\n")
-            darwin_dist_str = f"{darwin_results['distance']:.4f}" if darwin_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Лучшее найденное расстояние Дарвин ГА: {darwin_dist_str}\n")
-            self.append_result(f"Время выполнения Дарвин ГА: {darwin_results['time']:.4f} сек.\n")
-
-
-            # --- Запуск ГА (Де Фриз) ---
-            self.append_result("\n--- Запуск Генетического алгоритма (Де Фриз) ---\n")
-            devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
-                ga_params, # Используем те же параметры ГА
-                self.distance_matrix,
-                model_type='devries',
-                status_callback=self.update_status
-            )
-            devries_results = {'route': devries_route, 'distance': devries_distance, 'time': devries_time}
-            self.append_result(f"Лучший найденный маршрут Де Фриз ГА: {' -> '.join(map(str, devries_results['route'])) if devries_results['route'] else 'N/A'}\n")
-            devries_dist_str = f"{devries_results['distance']:.4f}" if devries_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Лучшее найденное расстояние Де Фриз ГА: {devries_dist_str}\n")
-            self.append_result(f"Время выполнения Де Фриз ГА: {devries_results['time']:.4f} сек.\n")
-
-
-            # --- Запуск поиска точного решения ---
-            self.append_result("\n--- Запуск поиска точного решения (одиночный) ---\n")
-
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 self.append_result(f"Пропуск поиска точного решения перебором: слишком много городов ({self.current_num_cities} > {EXACT_SOLUTION_CITY_LIMIT}).\n")
-                 exact_route, exact_distance, exact_time = None, float('inf'), 0.0
-                 self.update_status("Расчеты завершены.")
-            else:
-                 exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                     self.distance_matrix,
-                     status_callback=self.update_status
-                 )
-                 self.update_status("Расчеты завершены.")
-
-            exact_results = {'route': exact_route, 'distance': exact_distance, 'time': exact_time}
-            self.append_result(f"Оптимальный маршрут: {' -> '.join(map(str, exact_results['route'])) if exact_results['route'] else 'N/A'}\n")
-            exact_dist_str = f"{exact_results['distance']:.4f}" if exact_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Минимальное расстояние: {exact_dist_str}\n")
-            self.append_result(f"Время выполнения точного решения: {exact_results['time']:.4f} сек.\n")
-
-
-            # --- Сводка сравнения ---
-            self.append_result("\n--- Сводка сравнения (одиночный) ---\n")
-            # Сравнение расстояний
-            methods = {'Дарвин ГА': darwin_results, 'Де Фриз ГА': devries_results, 'Точное': exact_results}
-            min_dist = float('inf')
-            best_method = 'N/A'
-
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and res['distance'] < min_dist:
-                      min_dist = res['distance']
-                      best_method = name
-
-            self.append_result(f"Лучшее из найденных: {min_dist:.4f} ({best_method})\n")
-
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and min_dist != float('inf'):
-                      abs_dev = abs(res['distance'] - min_dist)
-                      self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Отклонение от лучшего: {abs_dev:.4f})\n")
-                      if min_dist > 0:
-                           rel_dev = (abs_dev / min_dist) * 100.0
-                           self.append_result(f"  Отн. откл. от лучшего: {rel_dev:.2f} %\n")
-                      elif abs_dev > 0:
-                           self.append_result(f"  Отн. откл. от лучшего: inf %\n")
-
-                 elif res['distance'] != float('inf'):
-                     self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Точное решение не найдено для сравнения)\n")
-                 else:
-                      self.append_result(f"Расстояние {name}: N/A (Не найден корректный маршрут)\n")
-
-            # Сравнение времени
-            self.append_result(f"Время выполнения: Дарвин ГА {darwin_results['time']:.4f} сек., Де Фриз ГА {devries_results['time']:.4f} сек., Точное {exact_results['time']:.4f} сек.\n")
-
-
-            self.save_single_results_to_file(darwin_results, devries_results, exact_results)
-
-
-        except ValueError:
-            messagebox.showerror("Ошибка ввода", "Пожалуйста, введите числовые значения во все поля параметров.")
-            self.update_status("Ошибка ввода параметров.")
-        except Exception as e:
-            messagebox.showerror("Произошла ошибка", f"Общая ошибка при выполнении алгоритмов: {e}")
-            import traceback
-            print(traceback.format_exc())
-            self.update_status("Произошла ошибка при выполнении.")
-            raise
-
-
-    def _run_batch_process(self):
-        """Выполняет пакетный запуск ГА (Дарвин и Де Фриз) и точного решения N раз."""
-        try:
-            num_iterations_str = self.batch_iterations_var.get()
-            try:
-                num_iterations = int(num_iterations_str)
-                if num_iterations <= 0:
-                     messagebox.showerror("Ошибка ввода", "Количество итераций для пакетного режима должно быть > 0.")
-                     return
-            except ValueError:
-                 messagebox.showerror("Ошибка ввода", "Пожалуйста, введите целое число для количества итераций.")
-                 return
-
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 messagebox.showerror("Ошибка", f"Пакетный режим с точным решением возможен только для количества городов <= {EXACT_SOLUTION_CITY_LIMIT}.")
-                 return
-
-            self.clear_results()
-            self.append_result(f"Запуск пакетного режима ({num_iterations} итераций) для {self.current_num_cities} городов...\n")
-
-            all_results = []
-
-            ga_params = {
-                'population_size': self.population_size_var.get(),
-                'num_parents': self.num_parents_var.get(),
-                'mutation_rate': self.mutation_rate_var.get(),
-                'generations': self.generations_var.get()
-            }
-            if ga_params['population_size'] <= 0 or ga_params['num_parents'] <= 0 or ga_params['num_parents'] > ga_params['population_size'] or \
-               not (0.0 <= ga_params['mutation_rate'] <= 1.0) or ga_params['generations'] <= 0:
-                 messagebox.showerror("Ошибка ввода", "Некорректные параметры ГА для пакетного режима.")
-                 return
-
-
-            for i in range(num_iterations):
-                self.update_status(f"Пакетный режим: Итерация {i + 1}/{num_iterations}")
-                current_matrix = generate_random_distance_matrix(self.current_num_cities)
-
-                # Запуск ГА (Дарвин)
-                darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
-                    ga_params,
-                    current_matrix,
-                    model_type='darwin'
-                )
-
-                # Запуск ГА (Де Фриз) - те же параметры, новая матрица
-                devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
-                    ga_params,
-                    current_matrix,
-                    model_type='devries'
-                )
-
-
-                # Запуск точного решения - та же матрица
-                exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                    current_matrix
-                )
-
-                all_results.append({
-                    'iter': i + 1,
-                    'darwin_distance': darwin_distance,
-                    'darwin_time': darwin_time,
-                    'devries_distance': devries_distance,
-                    'devries_time': devries_time,
-                    'exact_distance': exact_distance,
-                    'exact_time': exact_time
-                })
-
-
-            self.update_status("Пакетный режим: Все итерации завершены. Обработка результатов...")
-            self.append_result("\n--- Результаты пакетного режима ---\n")
-
-            # Расчет сводной статистики
-            darwin_distances = [r['darwin_distance'] for r in all_results if r['darwin_distance'] != float('inf')]
-            devries_distances = [r['devries_distance'] for r in all_results if r['devries_distance'] != float('inf')]
-            exact_distances = [r['exact_distance'] for r in all_results if r['exact_distance'] != float('inf')]
-
-            summary_stats = {}
-            summary_stats["Average Darwin Distance"] = sum(darwin_distances) / len(darwin_distances) if darwin_distances else float('inf')
-            summary_stats["Average De Vries Distance"] = sum(devries_distances) / len(devries_distances) if devries_distances else float('inf')
-            summary_stats["Average Exact Distance"] = sum(exact_distances) / len(exact_distances) if exact_distances else float('inf')
-
-            summary_stats["Average Darwin Time (s)"] = sum(r['darwin_time'] for r in all_results) / num_iterations
-            summary_stats["Average De Vries Time (s)"] = sum(r['devries_time'] for r in all_results) / num_iterations
-            summary_stats["Average Exact Time (s)"] = sum(r['exact_time'] for r in all_results) / num_iterations
-
-            # Сравнение с оптимумом для каждой модели ГА
-            darwin_optimal_count = sum(1 for r in all_results if r['darwin_distance'] != float('inf') and r['exact_distance'] != float('inf') and abs(r['darwin_distance'] - r['exact_distance']) < 1e-6)
-            summary_stats["Darwin Optimal Found Count"] = darwin_optimal_count
-            summary_stats["Darwin Optimal Found Percentage (%)"] = (darwin_optimal_count / num_iterations) * 100.0 if num_iterations > 0 else 0
-
-            devries_optimal_count = sum(1 for r in all_results if r['devries_distance'] != float('inf') and r['exact_distance'] != float('inf') and abs(r['devries_distance'] - r['exact_distance']) < 1e-6)
-            summary_stats["De Vries Optimal Found Count"] = devries_optimal_count
-            summary_stats["De Vries Optimal Percentage (%)"] = (devries_optimal_count / num_iterations) * 100.0 if num_iterations > 0 else 0
-
-
-            # Расчет среднего относительного отклонения для каждой модели ГА
-            darwin_relative_deviations = []
-            devries_relative_deviations = []
-
-            for r in all_results:
-                if r['exact_distance'] != float('inf'):
-                    # Отклонение для Дарвина
-                    if r['darwin_distance'] != float('inf'):
-                         abs_dev_d = abs(r['darwin_distance'] - r['exact_distance'])
-                         if r['exact_distance'] > 0:
-                              darwin_relative_deviations.append((abs_dev_d / r['exact_distance']) * 100.0)
-                         elif abs_dev_d > 0: # Точное 0, Дарвин > 0
-                              darwin_relative_deviations.append(float('inf')) # Бесконечная относительная ошибка
-                         else: # Точное 0, Дарвин 0
-                             darwin_relative_deviations.append(0.0)
-                    # else: darwin_relative_deviations.append(float('inf')) # Если Дарвин inf
-
-                    # Отклонение для Де Фриза
-                    if r['devries_distance'] != float('inf'):
-                         abs_dev_dv = abs(r['devries_distance'] - r['exact_distance'])
-                         if r['exact_distance'] > 0:
-                              devries_relative_deviations.append((abs_dev_dv / r['exact_distance']) * 100.0)
-                         elif abs_dev_dv > 0: # Точное 0, Де Фриз > 0
-                              devries_relative_deviations.append(float('inf')) # Бесконечная относительная ошибка
-                         else: # Точное 0, Де Фриз 0
-                             devries_relative_deviations.append(0.0)
-                    # else: devries_relative_deviations.append(float('inf')) # Если Де Фриз inf
-
-
-            # Среднее относительное отклонение считаем только по конечным значениям, исключая inf
             finite_darwin_rel_dev = [d for d in darwin_relative_deviations if d != float('inf')]
             summary_stats["Average Darwin Relative Deviation (%)"] = sum(finite_darwin_rel_dev) / len(finite_darwin_rel_dev) if finite_darwin_rel_dev else 0.0
             summary_stats["Darwin Infinite Relative Deviation Count"] = sum(1 for d in darwin_relative_deviations if d == float('inf'))
@@ -1308,286 +1169,10 @@ class TSPSolverGUI:
 
             for key, value in summary_stats.items():
                 if isinstance(value, float):
-                     self.append_result(f"{key}: {value:.4f}\n")
-                else:
-                     self.append_result(f"{key}: {value}\n")
-
-            self.save_batch_results_to_file(all_results, summary_stats)
-
-            self.plot_batch_results(all_results, summary_stats)
-
-
-            self.update_status("Пакетный режим завершен. Графики показаны.")
-
-
-        except ValueError:
-            messagebox.showerror("Ошибка ввода", "Пожалуйста, введите числовые значения в поля параметров пакетного режима.")
-            self.update_status("Ошибка ввода параметров пакетного режима.")
-        except Exception as e:
-            messagebox.showerror("Произошла ошибка", f"Общая ошибка при выполнении пакетного режима: {e}")
-            import traceback
-            print(traceback.format_exc())
-            self.update_status("Произошла ошибка при выполнении пакетного режима.")
-            raise
-
-
-    def _run_single_process(self):
-        """Выполняет одиночный запуск ГА (Дарвин и Де Фриз) и точного решения."""
-        self.clear_results()
-        self.append_result(f"Запуск одиночного расчета для {self.current_num_cities} городов...\n")
-
-        darwin_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        devries_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        exact_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-
-        try:
-            ga_params = {
-                'population_size': self.population_size_var.get(),
-                'num_parents': self.num_parents_var.get(),
-                'mutation_rate': self.mutation_rate_var.get(),
-                'generations': self.generations_var.get()
-            }
-            if ga_params['population_size'] <= 0 or ga_params['num_parents'] <= 0 or ga_params['num_parents'] > ga_params['population_size'] or \
-               not (0.0 <= ga_params['mutation_rate'] <= 1.0) or ga_params['generations'] <= 0:
-                 messagebox.showerror("Ошибка ввода", "Некорректные параметры ГА.")
-                 return
-
-            # --- Запуск ГА (Дарвин) ---
-            self.append_result("\n--- Запуск Генетического алгоритма (Дарвин) ---\n")
-            darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
-                ga_params,
-                self.distance_matrix,
-                model_type='darwin',
-                status_callback=self.update_status
-            )
-            darwin_results = {'route': darwin_route, 'distance': darwin_distance, 'time': darwin_time}
-            self.append_result(f"Лучший найденный маршрут Дарвин ГА: {' -> '.join(map(str, darwin_results['route'])) if darwin_results['route'] else 'N/A'}\n")
-            darwin_dist_str = f"{darwin_results['distance']:.4f}" if darwin_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Лучшее найденное расстояние Дарвин ГА: {darwin_dist_str}\n")
-            self.append_result(f"Время выполнения Дарвин ГА: {darwin_results['time']:.4f} сек.\n")
-
-
-            # --- Запуск ГА (Де Фриз) ---
-            self.append_result("\n--- Запуск Генетического алгоритма (Де Фриз) ---\n")
-            devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
-                ga_params, # Используем те же параметры ГА
-                self.distance_matrix,
-                model_type='devries',
-                status_callback=self.update_status
-            )
-            devries_results = {'route': devries_route, 'distance': devries_distance, 'time': devries_time}
-            self.append_result(f"Лучший найденный маршрут Де Фриз ГА: {' -> '.join(map(str, devries_results['route'])) if devries_results['route'] else 'N/A'}\n")
-            devries_dist_str = f"{devries_results['distance']:.4f}" if devries_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Лучшее найденное расстояние Де Фриз ГА: {devries_dist_str}\n")
-            self.append_result(f"Время выполнения Де Фриз ГА: {devries_results['time']:.4f} сек.\n")
-
-
-            # --- Запуск поиска точного решения ---
-            self.append_result("\n--- Запуск поиска точного решения (одиночный) ---\n")
-
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 self.append_result(f"Пропуск поиска точного решения перебором: слишком много городов ({self.current_num_cities} > {EXACT_SOLUTION_CITY_LIMIT}).\n")
-                 exact_route, exact_distance, exact_time = None, float('inf'), 0.0
-                 self.update_status("Расчеты завершены.")
-            else:
-                 exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                     self.distance_matrix,
-                     status_callback=self.update_status
-                 )
-                 self.update_status("Расчеты завершены.")
-
-            exact_results = {'route': exact_route, 'distance': exact_distance, 'time': exact_time}
-            self.append_result(f"Оптимальный маршрут: {' -> '.join(map(str, exact_results['route'])) if exact_results['route'] else 'N/A'}\n")
-            exact_dist_str = f"{exact_results['distance']:.4f}" if exact_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Минимальное расстояние: {exact_dist_str}\n")
-            self.append_result(f"Время выполнения точного решения: {exact_results['time']:.4f} сек.\n")
-
-
-            # --- Сводка сравнения ---
-            self.append_result("\n--- Сводка сравнения (одиночный) ---\n")
-            # Сравнение расстояний
-            methods = {'Дарвин ГА': darwin_results, 'Де Фриз ГА': devries_results, 'Точное': exact_results}
-            min_dist = float('inf')
-            best_method = 'N/A'
-
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and res['distance'] < min_dist:
-                      min_dist = res['distance']
-                      best_method = name
-
-            self.append_result(f"Лучшее из найденных: {min_dist:.4f} ({best_method})\n")
-
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and exact_results['distance'] != float('inf'): # Сравниваем с найденным точным решением
-                      abs_dev = abs(res['distance'] - exact_results['distance'])
-                      self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Отклонение от точного: {abs_dev:.4f})\n")
-                      if exact_results['distance'] > 0:
-                           rel_dev = (abs_dev / exact_results['distance']) * 100.0
-                           self.append_result(f"  Отн. откл. от точного: {rel_dev:.2f} %\n")
-                      elif abs_dev > 0:
-                           self.append_result(f"  Отн. откл. от точного: inf %\n")
-                      else: # Точное 0, и текущее 0
-                            self.append_result(f"  Отн. откл. от точного: 0.0 %\n")
-
-                 elif res['distance'] != float('inf'):
-                     self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Точное решение не найдено для сравнения)\n")
-                 else:
-                      self.append_result(f"Расстояние {name}: N/A (Не найден корректный маршрут)\n")
-
-            # Сравнение времени
-            self.append_result(f"Время выполнения: Дарвин ГА {darwin_results['time']:.4f} сек., Де Фриз ГА {devries_results['time']:.4f} сек., Точное {exact_results['time']:.4f} сек.\n")
-
-
-            self.save_single_results_to_file(darwin_results, devries_results, exact_results)
-
-
-        except ValueError:
-            messagebox.showerror("Ошибка ввода", "Пожалуйста, введите числовые значения во все поля параметров.")
-            self.update_status("Ошибка ввода параметров.")
-        except Exception as e:
-            messagebox.showerror("Произошла ошибка", f"Общая ошибка при выполнении алгоритмов: {e}")
-            import traceback
-            print(traceback.format_exc())
-            self.update_status("Произошла ошибка при выполнении.")
-            raise
-
-
-    def _run_batch_process(self):
-        """Выполняет пакетный запуск ГА (Дарвин и Де Фриз) и точного решения N раз."""
-        try:
-            num_iterations_str = self.batch_iterations_var.get()
-            try:
-                num_iterations = int(num_iterations_str)
-                if num_iterations <= 0:
-                     messagebox.showerror("Ошибка ввода", "Количество итераций для пакетного режима должно быть > 0.")
-                     return
-            except ValueError:
-                 messagebox.showerror("Ошибка ввода", "Пожалуйста, введите целое число для количества итераций.")
-                 return
-
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 messagebox.showerror("Ошибка", f"Пакетный режим с точным решением возможен только для количества городов <= {EXACT_SOLUTION_CITY_LIMIT}.")
-                 return
-
-            self.clear_results()
-            self.append_result(f"Запуск пакетного режима ({num_iterations} итераций) для {self.current_num_cities} городов...\n")
-
-            all_results = []
-
-            ga_params = {
-                'population_size': self.population_size_var.get(),
-                'num_parents': self.num_parents_var.get(),
-                'mutation_rate': self.mutation_rate_var.get(),
-                'generations': self.generations_var.get()
-            }
-            if ga_params['population_size'] <= 0 or ga_params['num_parents'] <= 0 or ga_params['num_parents'] > ga_params['population_size'] or \
-               not (0.0 <= ga_params['mutation_rate'] <= 1.0) or ga_params['generations'] <= 0:
-                 messagebox.showerror("Ошибка ввода", "Некорректные параметры ГА для пакетного режима.")
-                 return
-
-
-            for i in range(num_iterations):
-                self.update_status(f"Пакетный режим: Итерация {i + 1}/{num_iterations}")
-                current_matrix = generate_random_distance_matrix(self.current_num_cities)
-
-                # Запуск ГА (Дарвин)
-                darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
-                    ga_params,
-                    current_matrix,
-                    model_type='darwin'
-                )
-
-                # Запуск ГА (Де Фриз) - те же параметры, новая матрица
-                devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
-                    ga_params,
-                    current_matrix,
-                    model_type='devries'
-                )
-
-
-                # Запуск точного решения - та же матрица
-                exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                    current_matrix
-                )
-
-                all_results.append({
-                    'iter': i + 1,
-                    'darwin_distance': darwin_distance,
-                    'darwin_time': darwin_time,
-                    'devries_distance': devries_distance,
-                    'devries_time': devries_time,
-                    'exact_distance': exact_distance,
-                    'exact_time': exact_time
-                })
-
-
-            self.update_status("Пакетный режим: Все итерации завершены. Обработка результатов...")
-            self.append_result("\n--- Результаты пакетного режима ---\n")
-
-            # Расчет сводной статистики
-            darwin_distances = [r['darwin_distance'] for r in all_results if r['darwin_distance'] != float('inf')]
-            devries_distances = [r['devries_distance'] for r in all_results if r['devries_distance'] != float('inf')]
-            exact_distances = [r['exact_distance'] for r in all_results if r['exact_distance'] != float('inf')]
-
-            summary_stats = {}
-            summary_stats["Average Darwin Distance"] = sum(darwin_distances) / len(darwin_distances) if darwin_distances else float('inf')
-            summary_stats["Average De Vries Distance"] = sum(devries_distances) / len(devries_distances) if devries_distances else float('inf')
-            summary_stats["Average Exact Distance"] = sum(exact_distances) / len(exact_distances) if exact_distances else float('inf')
-
-            summary_stats["Average Darwin Time (s)"] = sum(r['darwin_time'] for r in all_results) / num_iterations
-            summary_stats["Average De Vries Time (s)"] = sum(r['devries_time'] for r in all_results) / num_iterations
-            summary_stats["Average Exact Time (s)"] = sum(r['exact_time'] for r in all_results) / num_iterations
-
-            # Сравнение с оптимумом для каждой модели ГА
-            darwin_optimal_count = sum(1 for r in all_results if r['darwin_distance'] != float('inf') and r['exact_distance'] != float('inf') and abs(r['darwin_distance'] - r['exact_distance']) < 1e-6)
-            summary_stats["Darwin Optimal Found Count"] = darwin_optimal_count
-            summary_stats["Darwin Optimal Found Percentage (%)"] = (darwin_optimal_count / num_iterations) * 100.0 if num_iterations > 0 else 0
-
-            devries_optimal_count = sum(1 for r in all_results if r['devries_distance'] != float('inf') and r['exact_distance'] != float('inf') and abs(r['devries_distance'] - r['exact_distance']) < 1e-6)
-            summary_stats["De Vries Optimal Found Count"] = devries_optimal_count
-            summary_stats["De Vries Optimal Percentage (%)"] = (devries_optimal_count / num_iterations) * 100.0 if num_iterations > 0 else 0
-
-
-            # Расчет среднего относительного отклонения для каждой модели ГА
-            darwin_relative_deviations = []
-            devries_relative_deviations = []
-
-            for r in all_results:
-                if r['exact_distance'] != float('inf'): # Можем посчитать отн. отклонение только если точное решение валидно
-                    # Отклонение для Дарвина
-                    if r['darwin_distance'] != float('inf'):
-                         abs_dev_d = abs(r['darwin_distance'] - r['exact_distance'])
-                         if r['exact_distance'] > 0:
-                              darwin_relative_deviations.append((abs_dev_d / r['exact_distance']) * 100.0)
-                         elif abs_dev_d > 0: # Точное 0, Дарвин > 0
-                              darwin_relative_deviations.append(float('inf')) # Бесконечная относительная ошибка
-                         else: # Точное 0, Дарвин 0
-                             darwin_relative_deviations.append(0.0) # Ошибка 0%
-
-                    # Отклонение для Де Фриза
-                    if r['devries_distance'] != float('inf'):
-                         abs_dev_dv = abs(r['devries_distance'] - r['exact_distance'])
-                         if r['exact_distance'] > 0:
-                              devries_relative_deviations.append((abs_dev_dv / r['exact_distance']) * 100.0)
-                         elif abs_dev_dv > 0: # Точное 0, Де Фриз > 0
-                              devries_relative_deviations.append(float('inf')) # Бесконечная относительная ошибка
-                         else: # Точное 0, Де Фриз 0
-                             devries_relative_deviations.append(0.0) # Ошибка 0%
-
-
-            # Среднее относительное отклонение считаем только по конечным значениям, исключая inf
-            finite_darwin_rel_dev = [d for d in darwin_relative_deviations if d != float('inf')]
-            summary_stats["Average Darwin Relative Deviation (%)"] = sum(finite_darwin_rel_dev) / len(finite_darwin_rel_dev) if finite_darwin_rel_dev else 0.0
-            summary_stats["Darwin Infinite Relative Deviation Count"] = sum(1 for d in darwin_relative_deviations if d == float('inf'))
-
-            finite_devries_rel_dev = [d for d in devries_relative_deviations if d != float('inf')]
-            summary_stats["Average De Vries Relative Deviation (%)"] = sum(finite_devries_rel_dev) / len(finite_devries_rel_dev) if finite_devries_rel_dev else 0.0
-            summary_stats["De Vries Infinite Relative Deviation Count"] = sum(1 for d in devries_relative_deviations if d == float('inf'))
-
-
-            for key, value in summary_stats.items():
-                if isinstance(value, float):
-                     self.append_result(f"{key}: {value:.4f}\n")
+                     if value == float('inf'):
+                         self.append_result(f"{key}: inf\n")
+                     else:
+                         self.append_result(f"{key}: {value:.4f}\n")
                 else:
                      self.append_result(f"{key}: {value}\n")
 
@@ -1611,127 +1196,6 @@ class TSPSolverGUI:
 
         finally:
             pass
-
-
-    def _run_single_process(self):
-        """Выполняет одиночный запуск ГА (Дарвин и Де Фриз) и точного решения."""
-        self.clear_results()
-        self.append_result(f"Запуск одиночного расчета для {self.current_num_cities} городов...\n")
-
-        darwin_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        devries_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-        exact_results = {'route': None, 'distance': float('inf'), 'time': 0.0}
-
-        try:
-            ga_params = {
-                'population_size': self.population_size_var.get(),
-                'num_parents': self.num_parents_var.get(),
-                'mutation_rate': self.mutation_rate_var.get(),
-                'generations': self.generations_var.get()
-            }
-            if ga_params['population_size'] <= 0 or ga_params['num_parents'] <= 0 or ga_params['num_parents'] > ga_params['population_size'] or \
-               not (0.0 <= ga_params['mutation_rate'] <= 1.0) or ga_params['generations'] <= 0:
-                 messagebox.showerror("Ошибка ввода", "Некорректные параметры ГА.")
-                 return
-
-            # --- Запуск ГА (Дарвин) ---
-            self.append_result("\n--- Запуск Генетического алгоритма (Дарвин) ---\n")
-            darwin_route, darwin_distance, darwin_time = run_genetic_algorithm_process(
-                ga_params,
-                self.distance_matrix,
-                model_type='darwin',
-                status_callback=self.update_status
-            )
-            darwin_results = {'route': darwin_route, 'distance': darwin_distance, 'time': darwin_time}
-            self.append_result(f"Лучший найденный маршрут Дарвин ГА: {' -> '.join(map(str, darwin_results['route'])) if darwin_results['route'] else 'N/A'}\n")
-            darwin_dist_str = f"{darwin_results['distance']:.4f}" if darwin_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Лучшее найденное расстояние Дарвин ГА: {darwin_dist_str}\n")
-            self.append_result(f"Время выполнения Дарвин ГА: {darwin_results['time']:.4f} сек.\n")
-
-
-            # --- Запуск ГА (Де Фриз) ---
-            self.append_result("\n--- Запуск Генетического алгоритма (Де Фриз) ---\n")
-            devries_route, devries_distance, devries_time = run_genetic_algorithm_process(
-                ga_params, # Используем те же параметры ГА
-                self.distance_matrix,
-                model_type='devries',
-                status_callback=self.update_status
-            )
-            devries_results = {'route': devries_route, 'distance': devries_distance, 'time': devries_time}
-            self.append_result(f"Лучший найденный маршрут Де Фриз ГА: {' -> '.join(map(str, devries_results['route'])) if devries_results['route'] else 'N/A'}\n")
-            devries_dist_str = f"{devries_results['distance']:.4f}" if devries_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Лучшее найденное расстояние Де Фриз ГА: {devries_dist_str}\n")
-            self.append_result(f"Время выполнения Де Фриз ГА: {devries_results['time']:.4f} сек.\n")
-
-
-            # --- Запуск поиска точного решения ---
-            self.append_result("\n--- Запуск поиска точного решения (одиночный) ---\n")
-
-            if self.current_num_cities > EXACT_SOLUTION_CITY_LIMIT:
-                 self.append_result(f"Пропуск поиска точного решения перебором: слишком много городов ({self.current_num_cities} > {EXACT_SOLUTION_CITY_LIMIT}).\n")
-                 exact_route, exact_distance, exact_time = None, float('inf'), 0.0
-                 self.update_status("Расчеты завершены.")
-            else:
-                 exact_route, exact_distance, exact_time = find_exact_solution_brute_force(
-                     self.distance_matrix,
-                     status_callback=self.update_status
-                 )
-                 self.update_status("Расчеты завершены.")
-
-            exact_results = {'route': exact_route, 'distance': exact_distance, 'time': exact_time}
-            self.append_result(f"Оптимальный маршрут: {' -> '.join(map(str, exact_results['route'])) if exact_results['route'] else 'N/A'}\n")
-            exact_dist_str = f"{exact_results['distance']:.4f}" if exact_results['distance'] != float('inf') else "inf"
-            self.append_result(f"Минимальное расстояние: {exact_dist_str}\n")
-            self.append_result(f"Время выполнения точного решения: {exact_results['time']:.4f} сек.\n")
-
-
-            # --- Сводка сравнения ---
-            self.append_result("\n--- Сводка сравнения (одиночный) ---\n")
-            # Сравнение расстояний
-            methods = {'Дарвин ГА': darwin_results, 'Де Фриз ГА': devries_results, 'Точное': exact_results}
-            min_dist = float('inf')
-            best_method = 'N/A'
-
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and res['distance'] < min_dist:
-                      min_dist = res['distance']
-                      best_method = name
-
-            self.append_result(f"Лучшее из найденных: {min_dist:.4f} ({best_method})\n")
-
-            for name, res in methods.items():
-                 if res['distance'] != float('inf') and exact_results['distance'] != float('inf'): # Сравниваем с найденным точным решением
-                      abs_dev = abs(res['distance'] - exact_results['distance'])
-                      self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Отклонение от точного: {abs_dev:.4f})\n")
-                      if exact_results['distance'] > 0:
-                           rel_dev = (abs_dev / exact_results['distance']) * 100.0
-                           self.append_result(f"  Отн. откл. от точного: {rel_dev:.2f} %\n")
-                      elif abs_dev > 0:
-                           self.append_result(f"  Отн. откл. от точного: inf %\n")
-                      else: # Точное 0, и текущее 0
-                            self.append_result(f"  Отн. откл. от точного: 0.0 %\n")
-
-                 elif res['distance'] != float('inf'):
-                     self.append_result(f"Расстояние {name}: {res['distance']:.4f} (Точное решение не найдено для сравнения)\n")
-                 else:
-                      self.append_result(f"Расстояние {name}: N/A (Не найден корректный маршрут)\n")
-
-            # Сравнение времени
-            self.append_result(f"Время выполнения: Дарвин ГА {darwin_results['time']:.4f} сек., Де Фриз ГА {devries_results['time']:.4f} сек., Точное {exact_results['time']:.4f} сек.\n")
-
-
-            self.save_single_results_to_file(darwin_results, devries_results, exact_results)
-
-
-        except ValueError:
-            messagebox.showerror("Ошибка ввода", "Пожалуйста, введите числовые значения во все поля параметров.")
-            self.update_status("Ошибка ввода параметров.")
-        except Exception as e:
-            messagebox.showerror("Произошла ошибка", f"Общая ошибка при выполнении алгоритмов: {e}")
-            import traceback
-            print(traceback.format_exc())
-            self.update_status("Произошла ошибка при выполнении.")
-            raise
 
 
 # --- Запуск GUI ---
